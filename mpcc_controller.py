@@ -331,7 +331,7 @@ class MPCCController(Node):
     def _compute_approach_control(self, pos, vel, target_pos):
         """计算接近轨迹的控制命令"""
         pos_error = target_pos - pos
-        vel_error = -vel  # 目标速度为0
+        vel_error = -vel
 
         # 合理接近控制器参数
         kp = np.array([1.2, 1.2, 2.0])
