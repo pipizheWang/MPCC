@@ -333,7 +333,7 @@ class MPCCController(Node):
         pos_error = target_pos - pos
         vel_error = -vel  # 目标速度为0
 
-        # 合理的接近控制器参数
+        # 合理接近控制器参数
         kp = np.array([1.2, 1.2, 2.0])
         kd = np.array([1.5, 1.5, 2.5])
 
