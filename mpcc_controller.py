@@ -36,6 +36,14 @@ class MPCCController(Node):
         # 轨迹接入策略参数
         self.declare_parameter('approach_distance', 1.5)
         self.declare_parameter('approach_speed', 0.6)
+        
+        # P控制器参数
+        self.declare_parameter('kp_pos_x', 1.2)
+        self.declare_parameter('kp_pos_y', 1.2) 
+        self.declare_parameter('kp_pos_z', 2.5)
+        self.declare_parameter('kp_vel_x', 0.8)
+        self.declare_parameter('kp_vel_y', 0.8)
+        self.declare_parameter('kp_vel_z', 1.2)
 
         # 读取参数
         spline_filename = self.get_parameter('spline_file').get_parameter_value().string_value
@@ -45,6 +53,19 @@ class MPCCController(Node):
         self.hover_height = self.get_parameter('hover_height').get_parameter_value().double_value
         self.approach_distance = self.get_parameter('approach_distance').get_parameter_value().double_value
         self.approach_speed = self.get_parameter('approach_speed').get_parameter_value().double_value
+        
+        # P控制器增益
+        self.kp_pos = np.array([
+            self.get_parameter('kp_pos_x').get_parameter_value().double_value,
+            self.get_parameter('kp_pos_y').get_parameter_value().double_value,
+            self.get_parameter('kp_pos_z').get_parameter_value().double_value
+        ])
+        
+        self.kp_vel = np.array([
+            self.get_parameter('kp_vel_x').get_parameter_value().double_value,
+            self.get_parameter('kp_vel_y').get_parameter_value().double_value,
+            self.get_parameter('kp_vel_z').get_parameter_value().double_value
+        ])
 
         # 构建样条文件的完整路径
         import os
@@ -78,6 +99,13 @@ class MPCCController(Node):
         self.last_acc_cmd = np.zeros(3)
         self.current_theta = 0.0
         self.current_v_theta = 0.0
+        
+        # 初始化控制分量变量
+        self.last_acc_feedforward = np.zeros(3)
+        self.last_acc_feedback = np.zeros(3)
+        self.last_ref_pos = np.zeros(3)
+        self.last_ref_vel = np.zeros(3)
+        self.last_ref_acc = np.zeros(3)
 
         # 轨迹接入状态管理
         self.approach_mode = True
@@ -158,6 +186,8 @@ class MPCCController(Node):
         self.get_logger().info(f"  MPCC频率: {self.mpcc_rate} Hz")
         self.get_logger().info(f"  接近距离阈值: {self.approach_distance} m")
         self.get_logger().info(f"  悬停高度: {self.hover_height} m")
+        self.get_logger().info(f"  P控制器位置增益: [{self.kp_pos[0]:.1f}, {self.kp_pos[1]:.1f}, {self.kp_pos[2]:.1f}]")
+        self.get_logger().info(f"  P控制器速度增益: [{self.kp_vel[0]:.1f}, {self.kp_vel[1]:.1f}, {self.kp_vel[2]:.1f}]")
 
     def _verify_trajectory(self):
         """验证轨迹的合理性"""
@@ -196,8 +226,12 @@ class MPCCController(Node):
             "timestamp",
             "pos_x", "pos_y", "pos_z",
             "vel_x", "vel_y", "vel_z",
-            "ref_x", "ref_y", "ref_z",
+            "ref_pos_x", "ref_pos_y", "ref_pos_z",
+            "ref_vel_x", "ref_vel_y", "ref_vel_z", 
+            "ref_acc_x", "ref_acc_y", "ref_acc_z",
             "acc_cmd_x", "acc_cmd_y", "acc_cmd_z",
+            "acc_ff_x", "acc_ff_y", "acc_ff_z",
+            "acc_fb_x", "acc_fb_y", "acc_fb_z",
             "theta", "v_theta",
             "contour_error", "lag_error",
             "solve_time_ms",
@@ -260,9 +294,18 @@ class MPCCController(Node):
             return
 
         try:
-            # 执行MPCC优化求解
-            acc_cmd, theta, v_theta = self.optimizer.solve(pos, vel, warm_start=True)
+            # 执行MPCC优化求解，获取前馈控制和参考状态
+            acc_feedforward, theta, v_theta, ref_pos, ref_vel, ref_acc = self.optimizer.solve(pos, vel, warm_start=True)
 
+            # 计算反馈控制（P控制器）
+            pos_error = ref_pos - pos
+            vel_error = ref_vel - vel
+            
+            acc_feedback = self.kp_pos * pos_error + self.kp_vel * vel_error
+            
+            # 组合前馈和反馈控制
+            acc_cmd = acc_feedforward + acc_feedback
+            
             # 结果验证和限制
             acc_norm = np.linalg.norm(acc_cmd)
             if acc_norm > self.max_accel:
@@ -279,12 +322,22 @@ class MPCCController(Node):
             self.last_acc_cmd = acc_cmd
             self.current_theta = theta
             self.current_v_theta = v_theta
+            
+            # 保存控制分量用于数据记录
+            self.last_acc_feedforward = acc_feedforward
+            self.last_acc_feedback = acc_feedback
+            self.last_ref_pos = ref_pos
+            self.last_ref_vel = ref_vel
+            self.last_ref_acc = ref_acc
 
             # 调试信息
             if self.debug_counter % 150 == 0:
-                ref_pos = self.traj.get_position(theta).flatten()
-                pos_error = np.linalg.norm(pos - ref_pos)
-                self.get_logger().info(f"MPCC状态: θ={theta:.3f}, v_θ={v_theta:.3f}, 误差={pos_error:.3f}m")
+                traj_ref_pos = self.traj.get_position(theta).flatten()
+                traj_pos_error = np.linalg.norm(pos - traj_ref_pos)
+                ff_norm = np.linalg.norm(acc_feedforward)
+                fb_norm = np.linalg.norm(acc_feedback)
+                self.get_logger().info(f"MPCC状态: θ={theta:.3f}, v_θ={v_theta:.3f}, 轨迹误差={traj_pos_error:.3f}m")
+                self.get_logger().info(f"控制分解: 前馈={ff_norm:.2f}, 反馈={fb_norm:.2f}, 总计={np.linalg.norm(acc_cmd):.2f}")
 
             # 获取求解信息并记录数据
             info = self.optimizer.get_solution_info()
@@ -298,6 +351,9 @@ class MPCCController(Node):
         except Exception as e:
             self.get_logger().error(f"MPCC求解失败: {e}")
             self.last_acc_cmd *= 0.9
+            # 在异常情况下保持上一次的控制分量
+            self.last_acc_feedforward = self.last_acc_cmd * 0.5
+            self.last_acc_feedback = self.last_acc_cmd * 0.5
 
         self.debug_counter += 1
 
@@ -491,19 +547,18 @@ class MPCCController(Node):
     def _log_data(self, pos, vel, acc_cmd, theta, v_theta,
                   contour_error, lag_error, solver_info, approach_mode):
         """记录数据到CSV文件"""
-        try:
-            ref_pos = self.traj.get_position(theta).flatten()
-        except:
-            ref_pos = np.array([0.0, 0.0, 0.0])
-
         timestamp = self.clock.now().nanoseconds * 1e-9
 
         row = [
             timestamp,
             pos[0], pos[1], pos[2],
             vel[0], vel[1], vel[2],
-            ref_pos[0], ref_pos[1], ref_pos[2],
+            self.last_ref_pos[0], self.last_ref_pos[1], self.last_ref_pos[2],
+            self.last_ref_vel[0], self.last_ref_vel[1], self.last_ref_vel[2],
+            self.last_ref_acc[0], self.last_ref_acc[1], self.last_ref_acc[2],
             acc_cmd[0], acc_cmd[1], acc_cmd[2],
+            self.last_acc_feedforward[0], self.last_acc_feedforward[1], self.last_acc_feedforward[2],
+            self.last_acc_feedback[0], self.last_acc_feedback[1], self.last_acc_feedback[2],
             theta, v_theta,
             contour_error, lag_error,
             solver_info['solve_time'],

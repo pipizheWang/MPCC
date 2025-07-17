@@ -402,6 +402,16 @@ class MPCCOptimizer:
             x_traj = []
             u_traj = []
 
+        # 从x1提取参考状态
+        try:
+            ref_pos = x1[0:3]  # 参考位置
+            ref_vel = x1[3:6]  # 参考速度  
+            ref_acc = x1[6:9]  # 参考加速度
+        except:
+            ref_pos = pos
+            ref_vel = vel
+            ref_acc = acc_cmd
+
         # 保存求解结果
         self.last_solution = {
             'acc_cmd': acc_cmd,
@@ -409,13 +419,16 @@ class MPCCOptimizer:
             'acc_state': acc_cmd,
             'theta': current_theta,
             'v_theta': current_v_theta,
+            'ref_pos': ref_pos,
+            'ref_vel': ref_vel,
+            'ref_acc': ref_acc,
             'x_traj': x_traj,
             'u_traj': u_traj,
             'status': status,
             'solve_time': time.time() - start_time
         }
 
-        return acc_cmd, current_theta, current_v_theta
+        return acc_cmd, current_theta, current_v_theta, ref_pos, ref_vel, ref_acc
 
     def find_closest_theta(self, pos):
         """找到距离当前位置最近的theta值"""
